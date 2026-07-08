@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "adail"
+version = "0.3.0"
+description = "Adaptive Drift-Aware Incremental Learning for medical image classification"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+  {name = "ADAIL Contributors"}
+]
+keywords = [
+  "continual-learning",
+  "class-incremental-learning",
+  "medical-imaging",
+  "pytorch",
+  "catastrophic-forgetting",
+  "prototype-learning",
+  "ordinal-learning"
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "torch>=2.0",
+  "torchvision>=0.15",
+  "numpy>=1.23",
+  "pillow>=9.0",
+  "tqdm>=4.64",
+  "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "ruff>=0.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-username/ADAIL"
+Repository = "https://github.com/your-username/ADAIL"
+Issues = "https://github.com/your-username/ADAIL/issues"
+
+[project.scripts]
+adail = "adail.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+adail = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

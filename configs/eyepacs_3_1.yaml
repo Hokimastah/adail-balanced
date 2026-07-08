@@ -1,0 +1,27 @@
+num_classes: 5
+feature_dim: 512
+memory_size: 2000
+prototype_momentum: 0.9
+prototype_margin: 1.0
+lambda_drift: 1.0
+lambda_proto: 0.2
+lambda_sep: 0.1
+lambda_ordinal: 0.1
+use_ordinal: true
+mask_unseen_classes: true
+memory_alpha_uncertainty: 1.0
+memory_beta_forgetting: 1.0
+memory_gamma_rarity: 1.5
+optimizer:
+  lr: 0.01
+  momentum: 0.9
+  weight_decay: 0.0005
+  nesterov: false
+data:
+  dataset_name: EyePACS
+  root: null
+  scenario: 3-1
+  image_size: 224
+  batch_size: 32
+  num_workers: 4
+  class_order: [0, 1, 2, 3, 4]

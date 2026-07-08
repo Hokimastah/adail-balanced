@@ -1,0 +1,28 @@
+# Template benchmark ADAIL vs LO2LN.
+# Sesuaikan data_root_adail dan data_root_lo2ln dengan lokasi dataset kamu.
+experiments:
+  - dataset: cch5000
+    scenario: 4-1
+    adail_config: configs/cch5000_4_1.yaml
+    data_root_adail: /path/to/cch5000_imagefolder
+    data_root_lo2ln: data/colorectal
+  - dataset: cch5000
+    scenario: 4-2
+    adail_config: configs/cch5000_4_2.yaml
+    data_root_adail: /path/to/cch5000_imagefolder
+    data_root_lo2ln: data/colorectal
+  - dataset: ham10000
+    scenario: 3-1
+    adail_config: configs/ham10000_3_1.yaml
+    data_root_adail: /path/to/ham10000_imagefolder
+    data_root_lo2ln: data/ham10000
+  - dataset: ham10000
+    scenario: 3-2
+    adail_config: configs/ham10000_3_2.yaml
+    data_root_adail: /path/to/ham10000_imagefolder
+    data_root_lo2ln: data/ham10000
+  - dataset: eyepacs
+    scenario: 3-1
+    adail_config: configs/eyepacs_3_1.yaml
+    data_root_adail: /path/to/eyepacs_imagefolder
+    data_root_lo2ln: data/diabetic

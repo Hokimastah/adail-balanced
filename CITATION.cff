@@ -1,0 +1,15 @@
+cff-version: 1.2.0
+message: "If you use ADAIL, please cite the related proposal/paper."
+title: "Adaptive Drift-Aware Incremental Learning (ADAIL) for Medical Image Classification"
+authors:
+  - family-names: "Danutirto"
+    given-names: "Satrio Puji"
+year: 2026
+version: "0.2.0"
+repository-code: "https://github.com/your-username/ADAIL"
+keywords:
+  - class-incremental learning
+  - medical image classification
+  - catastrophic forgetting
+  - temporal feature drift
+  - prototype evolution
