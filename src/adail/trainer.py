@@ -40,6 +40,9 @@ class ADAILTrainer:
     Important protocol detail: after task 1, the trainer only uses the current
     task data plus the exemplar memory. It does not revisit the full historical
     training dataset, preserving the CIL setting described in the proposal.
+    
+    The exemplar memory uses herding method: exemplars are stored as image files
+    on disk rather than in RAM, significantly reducing memory usage.
     """
 
     def __init__(
@@ -47,6 +50,7 @@ class ADAILTrainer:
         model: ADAILNet,
         config: ADAILConfig,
         device: str | torch.device = "cpu",
+        memory_cache_dir: str | Path | None = None,
     ) -> None:
         self.model = model.to(device)
         self.config = config
@@ -56,6 +60,7 @@ class ADAILTrainer:
             alpha_uncertainty=config.memory_alpha_uncertainty,
             beta_forgetting=config.memory_beta_forgetting,
             gamma_rarity=config.memory_gamma_rarity,
+            cache_dir=memory_cache_dir,
         )
         self.best_class_scores: dict[int, float] = {}
         self.current_class_scores: dict[int, float] = {}
@@ -354,6 +359,12 @@ class ADAILTrainer:
         }
 
     def save_checkpoint(self, path: str | Path) -> None:
+        """Save trainer state to checkpoint file.
+        
+        Note: Exemplar images are stored separately on disk (not in checkpoint).
+        Only metadata (quotas, best scores, etc.) is saved for reproducibility.
+        To preserve exemplars across training sessions, keep the cache directory.
+        """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
@@ -361,6 +372,7 @@ class ADAILTrainer:
                 "model": self.model.state_dict(),
                 "config": self.config.to_dict(),
                 "memory": self.memory.state_dict(),
+                "memory_cache_dir": str(self.memory.cache_dir),
                 "best_class_scores": self.best_class_scores,
                 "class_forgetting": self.class_forgetting,
                 "observed_class_counts": self.observed_class_counts,
@@ -369,8 +381,19 @@ class ADAILTrainer:
         )
 
     def load_checkpoint(self, path: str | Path, map_location: str | torch.device | None = None) -> None:
+        """Load trainer state from checkpoint file.
+        
+        Note: Exemplar images must exist at the saved cache directory path.
+        If exemplar images are not found, memory will be loaded with only metadata.
+        """
         state = torch.load(path, map_location=map_location or self.device)
         self.model.load_state_dict(state["model"])
+        
+        # Update memory cache_dir if saved and valid
+        saved_cache_dir = state.get("memory_cache_dir")
+        if saved_cache_dir and Path(saved_cache_dir).exists():
+            self.memory.cache_dir = Path(saved_cache_dir)
+        
         self.memory.load_state_dict(state["memory"])
         self.best_class_scores = {int(k): float(v) for k, v in state.get("best_class_scores", {}).items()}
         self.class_forgetting = {int(k): float(v) for k, v in state.get("class_forgetting", {}).items()}
