@@ -3,6 +3,7 @@
 A PyTorch research library for class-incremental medical image classification.
 """
 
+from .baselines import build_lo2ln_command, get_lo2ln_experiment
 from .config import ADAILConfig, DataConfig, OptimConfig
 from .metrics import (
     accuracy,
@@ -14,7 +15,6 @@ from .metrics import (
 )
 from .models import ADAILNet
 from .trainer import ADAILTrainer
-from .baselines import build_lo2ln_command, get_lo2ln_experiment
 
 __all__ = [
     "ADAILConfig",
@@ -32,4 +32,4 @@ __all__ = [
     "quadratic_weighted_kappa",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

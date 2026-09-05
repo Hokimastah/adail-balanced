@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
+import torch
 from torch.utils.data import Dataset
 from torchvision.datasets import ImageFolder
 
@@ -30,7 +31,7 @@ class ClassIncrementalScenario:
         base_classes: int,
         increment: int,
         class_order: list[int] | None = None,
-    ) -> "ClassIncrementalScenario":
+    ) -> ClassIncrementalScenario:
         if base_classes <= 0 or increment <= 0:
             raise ValueError("base_classes and increment must be positive")
         order = class_order or list(range(num_classes))
@@ -49,7 +50,7 @@ class ClassIncrementalScenario:
         num_classes: int,
         spec: str,
         class_order: list[int] | None = None,
-    ) -> "ClassIncrementalScenario":
+    ) -> ClassIncrementalScenario:
         """Parse scenario strings such as '4-1', '4-2', '3-1', or '3-2'."""
 
         try:
@@ -64,7 +65,7 @@ class ClassIncrementalScenario:
         dataset_name: str,
         scenario: str | None = None,
         class_order: list[int] | None = None,
-    ) -> "ClassIncrementalScenario":
+    ) -> ClassIncrementalScenario:
         preset = get_preset(dataset_name)
         spec = scenario or preset.default_scenarios[0]
         return cls.from_string(preset.num_classes, spec, class_order=class_order)
@@ -87,9 +88,10 @@ class DatasetSubsetByClass(Dataset):
 
     def _target_at(self, idx: int) -> int:
         if hasattr(self.dataset, "targets"):
-            return int(self.dataset.targets[idx])
-        item = self.dataset[idx]
-        return int(item[1])
+            target = self.dataset.targets[idx]
+        else:
+            target = self.dataset[idx][1]
+        return int(torch.as_tensor(target).reshape(-1)[0].item())
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -121,9 +123,15 @@ def build_imagefolder_loaders(
     if (root / "val").exists():
         val_dataset = ImageFolder(root / "val", transform=build_eval_transform(image_size))
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
+    )
     val_loader = None
     if val_dataset is not None:
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        val_loader = DataLoader(
+            val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers
+        )
     return ImageFolderLoaders(train=train_loader, val=val_loader, test=test_loader)

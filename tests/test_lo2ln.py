@@ -10,7 +10,9 @@ def test_lo2ln_experiment_mapping():
 
 
 def test_lo2ln_command():
-    cmd = build_lo2ln_command("external/LO2LN", "eyepacs", "3-1", data_path="data/diabetic", device="0")
+    cmd = build_lo2ln_command(
+        "external/LO2LN", "eyepacs", "3-1", data_path="data/diabetic", device="0"
+    )
     s = command_to_string(cmd)
     assert "-m inclearn" in s
     assert "--initial-increment 3" in s

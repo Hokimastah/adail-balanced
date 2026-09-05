@@ -5,8 +5,9 @@ authors:
   - family-names: "Danutirto"
     given-names: "Satrio Puji"
 year: 2026
-version: "0.2.0"
-repository-code: "https://github.com/your-username/ADAIL"
+version: "0.4.0"
+date-released: "2026-08-19"
+repository-code: "https://github.com/Hokimastah/ADAIL"
 keywords:
   - class-incremental learning
   - medical image classification

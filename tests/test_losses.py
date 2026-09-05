@@ -14,11 +14,16 @@ def test_drift_loss_is_scalar():
 
 def test_prototype_losses():
     bank = PrototypeBank(num_classes=3, feature_dim=4)
-    features = torch.randn(12, 4)
+    features = torch.randn(12, 4, requires_grad=True)
     labels = torch.tensor([0, 1, 2] * 4)
     bank.update(features, labels)
     assert bank.compactness_loss(features, labels).ndim == 0
     assert bank.separation_loss().ndim == 0
+    differentiable = bank.differentiable_separation_loss(features, labels, [0, 1, 2])
+    assert differentiable.ndim == 0
+    assert differentiable.requires_grad
+    differentiable.backward()
+    assert features.grad is not None
 
 
 def test_ordinal_loss():

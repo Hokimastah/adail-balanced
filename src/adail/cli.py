@@ -7,10 +7,6 @@ from pathlib import Path
 import torch
 
 from . import __version__
-from .config import ADAILConfig, DataConfig
-from .data import ClassIncrementalScenario, build_imagefolder_loaders, get_preset
-from .models import ADAILNet
-from .trainer import ADAILTrainer
 from .baselines import build_lo2ln_command, command_to_string, get_lo2ln_experiment
 from .benchmarking.comparison import (
     extract_adail_metrics,
@@ -19,6 +15,10 @@ from .benchmarking.comparison import (
     make_comparison_table,
     write_comparison_report,
 )
+from .config import ADAILConfig, DataConfig
+from .data import ClassIncrementalScenario, build_imagefolder_loaders, get_preset
+from .models import ADAILNet
+from .trainer import ADAILTrainer
 
 
 def _parse_args() -> argparse.Namespace:
@@ -40,7 +40,9 @@ def _parse_args() -> argparse.Namespace:
     train.add_argument("--config", default=None, help="optional YAML config created by init-config")
     train.add_argument("--data", default=None, help="dataset root with train/test folders")
     train.add_argument("--output", default="runs/adail")
-    train.add_argument("--dataset", default="generic", help="generic, cch5000, ham10000, or eyepacs")
+    train.add_argument(
+        "--dataset", default="generic", help="generic, cch5000, ham10000, or eyepacs"
+    )
     train.add_argument("--num-classes", type=int, default=None)
     train.add_argument("--scenario", default=None, help="class scenario, e.g. 4-1, 4-2, 3-1, 3-2")
     train.add_argument("--epochs", type=int, default=1)
@@ -55,7 +57,9 @@ def _parse_args() -> argparse.Namespace:
     train.add_argument("--no-mask-unseen", action="store_true")
 
     lo2ln = sub.add_parser("lo2ln-command", help="print an official LO2LN baseline command")
-    lo2ln.add_argument("--lo2ln-root", default="external/LO2LN", help="path to cloned EvelynChee/LO2LN repository")
+    lo2ln.add_argument(
+        "--lo2ln-root", default="external/LO2LN", help="path to cloned EvelynChee/LO2LN repository"
+    )
     lo2ln.add_argument("--dataset", choices=["cch5000", "ham10000", "eyepacs"], required=True)
     lo2ln.add_argument("--scenario", required=True, help="4-1, 4-2, 3-1, or 3-2")
     lo2ln.add_argument("--data-path", default=None, help="dataset path as expected by LO2LN")
@@ -69,7 +73,12 @@ def _parse_args() -> argparse.Namespace:
     comp.add_argument("--dataset", choices=["cch5000", "ham10000", "eyepacs"], required=True)
     comp.add_argument("--scenario", required=True)
     comp.add_argument("--adail-history", required=True, help="path to ADAIL history.json")
-    comp.add_argument("--lo2ln-average-accuracy", type=float, default=None, help="LO2LN average incremental accuracy; if omitted, official README value is used when available")
+    comp.add_argument(
+        "--lo2ln-average-accuracy",
+        type=float,
+        default=None,
+        help="LO2LN average incremental accuracy; if omitted, official README value is used when available",
+    )
     comp.add_argument("--lo2ln-average-forgetting", type=float, default=None)
     comp.add_argument("--output", default="comparison.md", help=".md or .csv output")
     return parser.parse_args()
@@ -142,7 +151,9 @@ def main() -> None:
             for key, preset in PRESETS.items():
                 scenarios = ", ".join(preset.default_scenarios)
                 ordinal = "yes" if preset.ordinal else "no"
-                print(f"{key}: {preset.num_classes} classes | scenarios: {scenarios} | ordinal: {ordinal}")
+                print(
+                    f"{key}: {preset.num_classes} classes | scenarios: {scenarios} | ordinal: {ordinal}"
+                )
         return
 
     if args.command == "lo2ln-command":
@@ -162,14 +173,23 @@ def main() -> None:
         if args.output_script:
             script = Path(args.output_script)
             script.parent.mkdir(parents=True, exist_ok=True)
-            script.write_text("#!/usr/bin/env bash\nset -euo pipefail\ncd " + command_to_string([args.lo2ln_root]) + "\n" + command + "\n", encoding="utf-8")
+            script.write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\ncd "
+                + command_to_string([args.lo2ln_root])
+                + "\n"
+                + command
+                + "\n",
+                encoding="utf-8",
+            )
             script.chmod(0o755)
             print(f"Wrote {script}")
         return
 
     if args.command == "compare-results":
         history = load_json_metrics(args.adail_history)
-        adail_row = extract_adail_metrics(history, args.dataset, args.scenario, source=args.adail_history)
+        adail_row = extract_adail_metrics(
+            history, args.dataset, args.scenario, source=args.adail_history
+        )
         exp = get_lo2ln_experiment(args.dataset, args.scenario)
         lo2ln_acc = args.lo2ln_average_accuracy
         if lo2ln_acc is None:
@@ -179,7 +199,9 @@ def main() -> None:
             scenario=args.scenario,
             average_accuracy=lo2ln_acc,
             average_forgetting=args.lo2ln_average_forgetting,
-            source="official README reported value" if args.lo2ln_average_accuracy is None else "user supplied",
+            source="official README reported value"
+            if args.lo2ln_average_accuracy is None
+            else "user supplied",
         )
         rows = [adail_row, lo2ln_row]
         print(make_comparison_table(rows))
@@ -190,7 +212,9 @@ def main() -> None:
     if args.command == "train":
         cfg = _config_from_args(args)
         if cfg.data.root is None:
-            raise SystemExit("Dataset root is missing. Pass --data or set data.root in the YAML config.")
+            raise SystemExit(
+                "Dataset root is missing. Pass --data or set data.root in the YAML config."
+            )
 
         out = Path(args.output)
         out.mkdir(parents=True, exist_ok=True)
@@ -207,11 +231,9 @@ def main() -> None:
             cfg.data.scenario,
             class_order=cfg.data.class_order,
         )
-        model = ADAILNet(
-            num_classes=cfg.num_classes,
+        model = ADAILNet.from_config(
+            cfg,
             pretrained_backbone=not args.no_pretrained,
-            prototype_momentum=cfg.prototype_momentum,
-            prototype_margin=cfg.prototype_margin,
         )
         trainer = ADAILTrainer(model=model, config=cfg, device=args.device)
         history = trainer.fit_scenario(

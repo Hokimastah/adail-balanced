@@ -3,7 +3,7 @@ from adail.data import ClassIncrementalScenario, get_preset
 
 
 def test_version():
-    assert adail.__version__ == "0.3.0"
+    assert adail.__version__ == "0.4.0"
 
 
 def test_proposal_preset():

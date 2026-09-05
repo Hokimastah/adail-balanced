@@ -12,7 +12,9 @@ def ordinal_expected_value(logits: torch.Tensor) -> torch.Tensor:
     return probs @ class_positions
 
 
-def ordinal_constraint_loss(logits: torch.Tensor, labels: torch.Tensor, normalize: bool = True) -> torch.Tensor:
+def ordinal_constraint_loss(
+    logits: torch.Tensor, labels: torch.Tensor, normalize: bool = True
+) -> torch.Tensor:
     """MAE-based ordinal consistency loss.
 
     This is most useful when class labels are ordered by disease severity, e.g.

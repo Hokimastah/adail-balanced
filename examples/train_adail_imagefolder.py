@@ -23,8 +23,10 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     loaders = build_imagefolder_loaders(args.data, batch_size=args.batch_size)
-    cfg = ADAILConfig(num_classes=args.num_classes, memory_size=args.memory_size, use_ordinal=args.ordinal)
-    model = ADAILNet(num_classes=args.num_classes)
+    cfg = ADAILConfig(
+        num_classes=args.num_classes, memory_size=args.memory_size, use_ordinal=args.ordinal
+    )
+    model = ADAILNet.from_config(cfg)
     trainer = ADAILTrainer(model, cfg, device="cuda" if torch.cuda.is_available() else "cpu")
     scenario = ClassIncrementalScenario.from_string(args.num_classes, args.scenario)
     history = trainer.fit_scenario(

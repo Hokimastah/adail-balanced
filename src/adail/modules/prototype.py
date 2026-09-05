@@ -55,14 +55,18 @@ class PrototypeBank(nn.Module):
                 self.vectors[cls_int].copy_(mean_feature)
                 self.initialized[cls_int] = True
             else:
-                self.vectors[cls_int].mul_(self.momentum).add_(mean_feature, alpha=1 - self.momentum)
+                self.vectors[cls_int].mul_(self.momentum).add_(
+                    mean_feature, alpha=1 - self.momentum
+                )
 
     def compactness_loss(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         """Pull features toward their class prototypes."""
 
         if features.numel() == 0:
             return features.new_tensor(0.0)
-        valid = (labels >= 0) & (labels < self.vectors.shape[0]) & self.initialized[labels.clamp_min(0)]
+        valid = (
+            (labels >= 0) & (labels < self.vectors.shape[0]) & self.initialized[labels.clamp_min(0)]
+        )
         if not valid.any():
             return features.new_tensor(0.0)
         features_valid = F.normalize(features[valid], dim=1)
@@ -70,7 +74,12 @@ class PrototypeBank(nn.Module):
         return F.mse_loss(features_valid, proto_valid)
 
     def separation_loss(self) -> torch.Tensor:
-        """Push initialized class prototypes apart by a minimum margin."""
+        """Return the buffer-only separation diagnostic.
+
+        Prototype vectors are EMA buffers, so this value is useful for logging
+        but intentionally is not used as the optimization loss. Use
+        :meth:`differentiable_separation_loss` during training.
+        """
 
         active = self.vectors[self.initialized]
         if active.shape[0] < 2:
@@ -82,3 +91,59 @@ class PrototypeBank(nn.Module):
         if penalties.numel() == 0:
             return self.vectors.new_tensor(0.0)
         return penalties.mean()
+
+    def differentiable_separation_loss(
+        self,
+        features: torch.Tensor,
+        labels: torch.Tensor,
+        seen_classes: list[int] | None = None,
+        *,
+        ordinal_aware: bool = False,
+    ) -> torch.Tensor:
+        """Push differentiable batch centroids away from competing prototypes.
+
+        The original ADAIL implementation computed separation only between EMA
+        buffers, which cannot backpropagate into the feature extractor. Here the
+        source centroids are calculated from live features while the prototype
+        bank acts as a stable detached target. The loss therefore updates the
+        backbone and remains meaningful even when a batch contains one class.
+        """
+
+        if features.numel() == 0:
+            return features.new_zeros(())
+        labels = labels.to(device=features.device, dtype=torch.long)
+        allowed = (
+            list(range(self.vectors.shape[0]))
+            if seen_classes is None
+            else [int(c) for c in seen_classes]
+        )
+        allowed = [
+            c for c in allowed if 0 <= c < self.vectors.shape[0] and bool(self.initialized[c])
+        ]
+        if not allowed:
+            return features.new_zeros(())
+
+        target_vectors = F.normalize(self.vectors[allowed].detach(), dim=1)
+        target_classes = torch.as_tensor(allowed, device=features.device, dtype=torch.long)
+        losses: list[torch.Tensor] = []
+
+        for class_id_tensor in labels.unique():
+            class_id = int(class_id_tensor.item())
+            class_mask = labels == class_id
+            if not bool(class_mask.any()):
+                continue
+            competitors = target_classes != class_id
+            if not bool(competitors.any()):
+                continue
+
+            centroid = F.normalize(features[class_mask].mean(dim=0, keepdim=True), dim=1)
+            distances = torch.cdist(centroid, target_vectors[competitors], p=2).squeeze(0)
+            margins = distances.new_full(distances.shape, self.margin)
+            if ordinal_aware and self.vectors.shape[0] > 1:
+                competing_classes = target_classes[competitors]
+                ordinal_distance = (competing_classes - class_id).abs().to(distances.dtype)
+                ordinal_distance /= float(self.vectors.shape[0] - 1)
+                margins = self.margin * (0.5 + 0.5 * ordinal_distance)
+            losses.append(F.relu(margins - distances).pow(2).mean())
+
+        return torch.stack(losses).mean() if losses else features.new_zeros(())

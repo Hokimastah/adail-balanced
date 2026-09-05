@@ -187,7 +187,8 @@ scenario = ClassIncrementalScenario.from_string(
 )
 
 model = ADAILNet(
-    num_classes=config.num_classes,
+    # Task 0 is a true 3-class model; the trainer expands it to 4 and 5.
+    num_classes=max(scenario.tasks[0]) + 1,
     pretrained_backbone=True,
     prototype_momentum=config.prototype_momentum,
     prototype_margin=config.prototype_margin,
@@ -219,7 +220,12 @@ ADAIL memakai protokol class-incremental:
 2. **Task inkremental** hanya menerima kelas baru pada task berjalan.
 3. Untuk kelas lama, trainer hanya memakai **exemplar memory**, bukan seluruh dataset historis.
 4. Pada setiap task, model menyimpan frozen teacher dari task sebelumnya untuk drift alignment.
-5. Prototype dan memory diperbarui setelah task selesai.
+5. Classifier dan prototype bank bertambah hanya ketika kelas baru terlihat.
+6. Prototype dan memory diperbarui setelah task selesai.
+
+Untuk skenario prefix-ordered seperti `3-1`, trainer juga memperbaiki pemanggil
+lama yang masih membuat head final sejak awal: sebelum Task 0, head otomatis
+diperkecil menjadi 3 kelas, lalu diperluas menjadi 4 dan 5 kelas.
 
 ---
 

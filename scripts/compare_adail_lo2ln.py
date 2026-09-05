@@ -34,7 +34,9 @@ def main() -> None:
         dataset=args.dataset,
         scenario=args.scenario,
         average_accuracy=lo2ln_accuracy,
-        source="official README reported value" if args.lo2ln_average_accuracy is None else "user supplied",
+        source="official README reported value"
+        if args.lo2ln_average_accuracy is None
+        else "user supplied",
     )
     rows = [adail_row, lo2ln_row]
     print(make_comparison_table(rows))

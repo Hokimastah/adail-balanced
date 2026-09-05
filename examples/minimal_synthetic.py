@@ -34,10 +34,9 @@ def make_dataset(num_classes: int = 5, n_per_class: int = 20):
 if __name__ == "__main__":
     num_classes = 5
     cfg = ADAILConfig(num_classes=num_classes, feature_dim=16, memory_size=50, use_ordinal=True)
-    model = ADAILNet(
-        num_classes=num_classes,
+    model = ADAILNet.from_config(
+        cfg,
         backbone=TinyBackbone(feature_dim=16),
-        feature_dim=16,
         pretrained_backbone=False,
     )
     trainer = ADAILTrainer(model, cfg)

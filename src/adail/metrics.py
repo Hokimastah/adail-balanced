@@ -38,7 +38,9 @@ def per_class_accuracy(
     return out
 
 
-def mean_absolute_error(preds: np.ndarray | torch.Tensor, labels: np.ndarray | torch.Tensor) -> float:
+def mean_absolute_error(
+    preds: np.ndarray | torch.Tensor, labels: np.ndarray | torch.Tensor
+) -> float:
     """Mean absolute error for ordinal predictions."""
 
     p = preds.detach().cpu().numpy() if isinstance(preds, torch.Tensor) else np.asarray(preds)
@@ -97,7 +99,9 @@ def average_forgetting(task_accuracy_matrix: list[list[float]]) -> float:
     final_row = task_accuracy_matrix[-1]
     forgetting_values: list[float] = []
     for task_idx in range(len(final_row) - 1):
-        previous_scores = [row[task_idx] for row in task_accuracy_matrix[task_idx:-1] if len(row) > task_idx]
+        previous_scores = [
+            row[task_idx] for row in task_accuracy_matrix[task_idx:-1] if len(row) > task_idx
+        ]
         if not previous_scores:
             continue
         forgetting_values.append(max(previous_scores) - final_row[task_idx])

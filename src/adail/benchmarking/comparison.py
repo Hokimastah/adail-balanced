@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -80,7 +80,16 @@ def extract_lo2ln_metrics(
 
 
 def make_comparison_table(rows: list[BenchmarkMetrics]) -> str:
-    headers = ["method", "dataset", "scenario", "average_accuracy", "average_forgetting", "mae", "qwk", "source"]
+    headers = [
+        "method",
+        "dataset",
+        "scenario",
+        "average_accuracy",
+        "average_forgetting",
+        "mae",
+        "qwk",
+        "source",
+    ]
     rendered_rows = [r.to_row() for r in rows]
     widths = {h: len(h) for h in headers}
     for row in rendered_rows:
@@ -88,7 +97,9 @@ def make_comparison_table(rows: list[BenchmarkMetrics]) -> str:
             widths[h] = max(widths[h], len(row[h]))
     sep = "| " + " | ".join("-" * widths[h] for h in headers) + " |"
     head = "| " + " | ".join(h.ljust(widths[h]) for h in headers) + " |"
-    body = ["| " + " | ".join(row[h].ljust(widths[h]) for h in headers) + " |" for row in rendered_rows]
+    body = [
+        "| " + " | ".join(row[h].ljust(widths[h]) for h in headers) + " |" for row in rendered_rows
+    ]
     return "\n".join([head, sep, *body])
 
 
@@ -99,7 +110,16 @@ def write_comparison_report(rows: list[BenchmarkMetrics], output: str | Path) ->
         with output.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=["method", "dataset", "scenario", "average_accuracy", "average_forgetting", "mae", "qwk", "source"],
+                fieldnames=[
+                    "method",
+                    "dataset",
+                    "scenario",
+                    "average_accuracy",
+                    "average_forgetting",
+                    "mae",
+                    "qwk",
+                    "source",
+                ],
             )
             writer.writeheader()
             for row in rows:
