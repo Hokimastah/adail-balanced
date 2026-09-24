@@ -24,6 +24,7 @@ from .metrics import (
     mean_absolute_error,
     per_class_accuracy,
     quadratic_weighted_kappa,
+    classification_metrics,
 )
 from .models import ADAILNet
 from .modules import (
@@ -308,6 +309,10 @@ class ADAILTrainer:
                     "seen_accuracy": float(seen_metrics["accuracy"]),
                     "seen_mae": float(seen_metrics["mae"]),
                     "seen_qwk": float(seen_metrics["qwk"]),
+                    "seen_precision": float(seen_metrics.get("precision", 0.0)),
+                    "seen_recall": float(seen_metrics.get("recall", 0.0)),
+                    "seen_f1": float(seen_metrics.get("f1", 0.0)),
+                    "confusion_matrix": seen_metrics.get("confusion_matrix", []),
                     "last_loss": float(epoch_logs[-1]["loss"]) if epoch_logs else 0.0,
                 }
             )
@@ -564,10 +569,26 @@ class ADAILTrainer:
             logits_all.append(logits.cpu())
             labels_all.append(labels.cpu())
         if not logits_all:
-            return {"accuracy": 0.0, "mae": 0.0, "qwk": 0.0, "per_class_accuracy": {}}
+            return {
+                "accuracy": 0.0,
+                "mae": 0.0,
+                "qwk": 0.0,
+                "precision": 0.0,
+                "recall": 0.0,
+                "f1": 0.0,
+                "confusion_matrix": [],
+                "per_class_accuracy": {},
+            }
         logits = torch.cat(logits_all)
         labels = torch.cat(labels_all)
         predictions = logits.argmax(dim=1)
+        cls_metrics = classification_metrics(predictions, labels, average="macro")
+        from sklearn.metrics import confusion_matrix
+        cm = confusion_matrix(
+            labels.numpy(),
+            predictions.numpy(),
+            labels=list(range(self.model.num_classes)),
+        )
         return {
             "accuracy": accuracy(logits, labels),
             "mae": mean_absolute_error(predictions, labels),
@@ -576,6 +597,10 @@ class ADAILTrainer:
                 labels,
                 num_classes=self.model.num_classes,
             ),
+            "precision": cls_metrics["precision"],
+            "recall": cls_metrics["recall"],
+            "f1": cls_metrics["f1"],
+            "confusion_matrix": cm.tolist(),
             "per_class_accuracy": per_class_accuracy(
                 predictions,
                 labels,

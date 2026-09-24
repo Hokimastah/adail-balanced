@@ -87,8 +87,10 @@ def quadratic_weighted_kappa(
 def average_accuracy(task_accuracy_matrix: list[list[float]]) -> float:
     """Average accuracy from a CIL task accuracy matrix."""
 
-    vals = [score for row in task_accuracy_matrix for score in row]
-    return float(np.mean(vals)) if vals else 0.0
+    if not task_accuracy_matrix:
+        return 0.0
+    row_means = [float(np.mean(row)) for row in task_accuracy_matrix if row]
+    return float(np.mean(row_means)) if row_means else 0.0
 
 
 def average_forgetting(task_accuracy_matrix: list[list[float]]) -> float:
@@ -106,3 +108,24 @@ def average_forgetting(task_accuracy_matrix: list[list[float]]) -> float:
             continue
         forgetting_values.append(max(previous_scores) - final_row[task_idx])
     return float(np.mean(forgetting_values)) if forgetting_values else 0.0
+
+
+def classification_metrics(
+    preds: np.ndarray | torch.Tensor,
+    labels: np.ndarray | torch.Tensor,
+    average: str = "macro",
+) -> dict[str, float]:
+    """Calculate precision, recall, and F1-score."""
+    from sklearn.metrics import precision_score, recall_score, f1_score
+
+    p = preds.detach().cpu().numpy() if isinstance(preds, torch.Tensor) else np.asarray(preds)
+    y = labels.detach().cpu().numpy() if isinstance(labels, torch.Tensor) else np.asarray(labels)
+    p = p.astype(int).reshape(-1)
+    y = y.astype(int).reshape(-1)
+    if p.size == 0 or y.size == 0:
+        return {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+
+    prec = float(precision_score(y, p, average=average, zero_division=0))
+    rec = float(recall_score(y, p, average=average, zero_division=0))
+    f1 = float(f1_score(y, p, average=average, zero_division=0))
+    return {"precision": prec, "recall": rec, "f1": f1}
