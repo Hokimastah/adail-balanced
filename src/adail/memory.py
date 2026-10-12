@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -11,26 +12,42 @@ from torch.utils.data import Dataset
 
 @dataclass
 class Exemplar:
-    image: torch.Tensor
+    # A stored `image` tensor is replayed as is. Without one, `source_index`
+    # points into the training dataset and the image is reloaded (and
+    # re-augmented) on access. Both may be set: the index then only identifies
+    # the sample for later memory updates.
+    image: torch.Tensor | None
     label: int
     score: float = 0.0
     feature: torch.Tensor | None = None
     uncertainty: float = 0.0
+    source_index: int | None = None
 
 
 class MemoryDataset(Dataset):
     """A dataset view over stored exemplars."""
 
-    def __init__(self, exemplars: list[Exemplar]) -> None:
+    def __init__(self, exemplars: list[Exemplar], source: Dataset | None = None) -> None:
         self.exemplars = exemplars
+        self.source = source
         self.targets = [int(item.label) for item in exemplars]
+        self.source_indices = [item.source_index for item in exemplars]
 
     def __len__(self) -> int:
         return len(self.exemplars)
 
     def __getitem__(self, index: int):
         item = self.exemplars[index]
-        return item.image, torch.tensor(item.label, dtype=torch.long)
+        if item.image is not None:
+            image = item.image
+        else:
+            if item.source_index is None or self.source is None:
+                raise RuntimeError(
+                    "Exemplar refers to the training dataset by index, but no source "
+                    "dataset is attached to the memory (set ExemplarMemory.source_dataset)."
+                )
+            image = self.source[item.source_index][0]
+        return image, torch.tensor(item.label, dtype=torch.long)
 
 
 class ExemplarMemory:
@@ -55,6 +72,9 @@ class ExemplarMemory:
         self.gamma_rarity = gamma_rarity
         self.exemplars: dict[int, list[Exemplar]] = defaultdict(list)
         self.quotas: dict[int, int] = {}
+        # Dataset that index-based exemplars (source_index) are reloaded from.
+        # It is not serialized; reattach it after loading a checkpoint.
+        self.source_dataset: Dataset | None = None
 
     def __len__(self) -> int:
         return sum(len(items) for items in self.exemplars.values())
@@ -62,9 +82,16 @@ class ExemplarMemory:
     def classes(self) -> list[int]:
         return sorted(self.exemplars.keys())
 
-    def as_dataset(self) -> MemoryDataset:
+    def as_dataset(self, source: Dataset | None = None) -> MemoryDataset:
+        """Exemplars as a dataset.
+
+        Index-based exemplars are reloaded from ``source`` when given (for
+        example the training images under the evaluation transform), otherwise
+        from ``source_dataset``.
+        """
+
         flat = [item for cls in self.classes() for item in self.exemplars[cls]]
-        return MemoryDataset(flat)
+        return MemoryDataset(flat, source=source if source is not None else self.source_dataset)
 
     def state_dict(self) -> dict[str, object]:
         # Serialize only tensors and primitive containers so checkpoints can be
@@ -77,6 +104,7 @@ class ExemplarMemory:
                     "score": float(item.score),
                     "feature": item.feature,
                     "uncertainty": float(item.uncertainty),
+                    "source_index": item.source_index,
                 }
                 for item in items
             ]
@@ -99,13 +127,15 @@ class ExemplarMemory:
                     items.append(value)
                 else:
                     payload = dict(value)
+                    source_index = payload.get("source_index")
                     items.append(
                         Exemplar(
-                            image=payload["image"],
+                            image=payload.get("image"),
                             label=int(payload["label"]),
                             score=float(payload.get("score", 0.0)),
                             feature=payload.get("feature"),
                             uncertainty=float(payload.get("uncertainty", 0.0)),
+                            source_index=None if source_index is None else int(source_index),
                         )
                     )
             loaded[int(key)] = items
@@ -126,14 +156,17 @@ class ExemplarMemory:
         uncertainty: dict[int, float] | None = None,
         forgetting: dict[int, float] | None = None,
         class_counts: dict[int, int] | None = None,
+        total: int | None = None,
     ) -> dict[int, int]:
         """Compute adaptive per-class quotas.
 
         Missing uncertainty/forgetting values default to zero. Missing counts default
-        to one to avoid division by zero.
+        to one to avoid division by zero. ``total`` caps the number of exemplars to
+        distribute below ``max_size`` (e.g. a budget that grows with seen classes).
         """
 
-        if self.max_size == 0 or not class_ids:
+        total = self.max_size if total is None else max(0, min(int(total), self.max_size))
+        if total == 0 or not class_ids:
             return {int(c): 0 for c in class_ids}
 
         uncertainty = uncertainty or {}
@@ -153,11 +186,11 @@ class ExemplarMemory:
             )
             scores.append(max(score, 1e-6))
         scores_arr = np.array(scores, dtype=float)
-        quotas_arr = np.floor(self.max_size * scores_arr / scores_arr.sum()).astype(int)
+        quotas_arr = np.floor(total * scores_arr / scores_arr.sum()).astype(int)
 
         # Distribute remainder to the largest fractional parts.
-        remainder = self.max_size - int(quotas_arr.sum())
-        fractions = (self.max_size * scores_arr / scores_arr.sum()) - quotas_arr
+        remainder = total - int(quotas_arr.sum())
+        fractions = (total * scores_arr / scores_arr.sum()) - quotas_arr
         order = np.argsort(-fractions)
         for idx in order[:remainder]:
             quotas_arr[idx] += 1
@@ -256,7 +289,7 @@ class ExemplarMemory:
 
     def update_from_tensors(
         self,
-        images: torch.Tensor,
+        images: torch.Tensor | None,
         labels: torch.Tensor,
         logits: torch.Tensor | None = None,
         features: torch.Tensor | None = None,
@@ -267,16 +300,34 @@ class ExemplarMemory:
         selection: str = "hybrid",
         representative_fraction: float = 0.5,
         uncertainty_fraction: float = 0.3,
+        source_indices: Sequence[int | None] | None = None,
+        capacity: int | None = None,
+        materialize_from: Dataset | None = None,
     ) -> None:
         """Add candidates and adaptively prune memory.
+
+        ``capacity`` limits how many exemplars are kept this time (never more than
+        ``max_size``); None uses the whole ``max_size``.
 
         Images are stored on CPU to avoid holding GPU memory.
         Candidate score combines uncertainty and closeness to class centroid when
         features are provided.
+
+        When ``source_indices`` gives a training-dataset index for a candidate,
+        only that index is kept and the image is reloaded from
+        ``source_dataset`` on replay; ``images`` may then be None. With
+        ``materialize_from`` (a deterministic view of the same dataset), the
+        selected exemplars instead get a stored tensor loaded from it, so they
+        replay a fixed image while only the selected ones are ever held in RAM.
         """
 
-        if self.max_size == 0:
+        limit = self.max_size if capacity is None else max(0, min(int(capacity), self.max_size))
+        if limit == 0:
+            self.quotas = {}
+            self.exemplars = defaultdict(list)
             return
+        if source_indices is not None and len(source_indices) != len(labels):
+            raise ValueError("source_indices must have one entry per label")
         labels_cpu = labels.detach().cpu().to(torch.long)
         incoming_classes = {int(x) for x in labels_cpu.tolist()}
         class_ids = sorted(incoming_classes if replace else set(self.classes()) | incoming_classes)
@@ -295,6 +346,7 @@ class ExemplarMemory:
             uncertainty=uncertainty_values,
             forgetting=forgetting,
             class_counts=class_counts,
+            total=limit,
         )
 
         # Feature centroid closeness provides a simple herding-like signal.
@@ -318,13 +370,21 @@ class ExemplarMemory:
             u = float(sample_uncertainty[i]) if sample_uncertainty is not None else 0.0
             score = u + float(closeness[i])
             feature = features_cpu[i].clone() if features_cpu is not None else None
+            source_index = source_indices[i] if source_indices is not None else None
+            if source_index is not None:
+                image = None
+            elif images is not None:
+                image = images[i].detach().cpu()
+            else:
+                raise ValueError("each candidate needs either an image or a source index")
             candidates_by_class[int(label)].append(
                 Exemplar(
-                    images[i].detach().cpu(),
+                    image,
                     int(label),
                     score,
                     feature=feature,
                     uncertainty=u,
+                    source_index=None if source_index is None else int(source_index),
                 )
             )
 
@@ -336,8 +396,8 @@ class ExemplarMemory:
             class_id: min(self.quotas.get(class_id, 0), len(candidates_by_class[class_id]))
             for class_id in class_ids
         }
-        capacity = min(self.max_size, sum(len(candidates_by_class[c]) for c in class_ids))
-        remainder = capacity - sum(effective_quotas.values())
+        fillable = min(limit, sum(len(candidates_by_class[c]) for c in class_ids))
+        remainder = fillable - sum(effective_quotas.values())
         priority = sorted(
             class_ids,
             key=lambda class_id: (
@@ -369,4 +429,9 @@ class ExemplarMemory:
                 representative_fraction,
                 uncertainty_fraction,
             )
+        if materialize_from is not None:
+            for items in selected.values():
+                for item in items:
+                    if item.image is None and item.source_index is not None:
+                        item.image = materialize_from[item.source_index][0].detach().cpu()
         self.exemplars = defaultdict(list, selected)

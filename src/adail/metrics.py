@@ -84,8 +84,42 @@ def quadratic_weighted_kappa(
     return float(1.0 - numerator / denominator)
 
 
+def average_incremental_accuracy(seen_accuracies: list[float]) -> float:
+    """Mean over tasks of the accuracy on all test samples of the seen classes.
+
+    This is the "average incremental accuracy" of iCaRL/LO2LN: every task's
+    accuracy is weighted by test samples, not by task.
+    """
+
+    return float(np.mean(seen_accuracies)) if seen_accuracies else 0.0
+
+
+def old_to_new_confusion(
+    confusion: np.ndarray | list[list[int]],
+    old_classes: list[int],
+    new_classes: list[int],
+) -> float:
+    """Share of old-class test samples predicted as one of the new classes.
+
+    Measures the bias towards the classes added in the current task.
+    """
+
+    cm = np.asarray(confusion)
+    if cm.size == 0 or not old_classes or not new_classes:
+        return 0.0
+    old = [int(c) for c in old_classes]
+    new = [int(c) for c in new_classes]
+    total = cm[old].sum()
+    return float(cm[np.ix_(old, new)].sum() / total) if total else 0.0
+
+
 def average_accuracy(task_accuracy_matrix: list[list[float]]) -> float:
-    """Average accuracy from a CIL task accuracy matrix."""
+    """Mean over tasks of the unweighted mean of per-task-block accuracies.
+
+    Every block of classes counts equally, whatever its number of test samples.
+    This is not the iCaRL/LO2LN average incremental accuracy; use
+    :func:`average_incremental_accuracy` to compare with LO2LN.
+    """
 
     if not task_accuracy_matrix:
         return 0.0
@@ -116,7 +150,7 @@ def classification_metrics(
     average: str = "macro",
 ) -> dict[str, float]:
     """Calculate precision, recall, and F1-score."""
-    from sklearn.metrics import precision_score, recall_score, f1_score
+    from sklearn.metrics import f1_score, precision_score, recall_score
 
     p = preds.detach().cpu().numpy() if isinstance(preds, torch.Tensor) else np.asarray(preds)
     y = labels.detach().cpu().numpy() if isinstance(labels, torch.Tensor) else np.asarray(labels)

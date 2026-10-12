@@ -39,7 +39,9 @@ Dimensi tetap 512 menjaga classifier, drift aligner, dan prototype bank tetap ko
 
 ## Objective per fase
 
-Fase `new` mengaktifkan cabang terbaru dan auxiliary classification. Fase `old` membekukan cabang terbaru, men-zero-kan gradien row classifier kelas baru, serta memperbesar bobot distillation dan ranking. Jadwal default adalah satu fase stability setiap dua epoch.
+Fase `new` mengaktifkan cabang terbaru dan auxiliary classification. Fase `old` membekukan cabang terbaru dan row classifier kelas baru, serta memperbesar bobot distillation dan ranking. Jadwal default adalah satu fase stability setiap dua epoch.
+
+Sejak 0.5.0, row kelas baru benar-benar diam selama fase `old`: nilai dan momentum row dipulihkan setelah `optimizer.step()`. Di 0.4.0 gradiennya hanya dinolkan, sehingga momentum SGD dan weight decay tetap menggeser row tersebut.
 
 Total objective:
 
@@ -56,9 +58,31 @@ L = L_cb_focal
 
 Distillation secara default hanya diterapkan ke exemplar memory. Margin ranking juga hanya aktif ketika batch mengandung target lama dan task memiliki kelas baru. Implementasi ranking menggunakan tensor dua dimensi yang konsisten, sehingga tidak terkena error `MarginRankingLoss` akibat target satu dimensi pada PyTorch modern.
 
+Sejak 0.5.0, margin ranking diukur pada similarity cosine tanpa skala (`ranking_space="cosine"`), seperti LO2LN. Di 0.4.0 margin diterapkan pada logit yang sudah dikali skala cosine (`s ≈ 10`), sehingga margin 0.2 efektif hanya 0.02.
+
 ## Balanced replay
 
-`ReplayDataset` mengonversi setiap label menjadi scalar `torch.long`. Ini mencegah error collate ketika dataset baru mengembalikan `int` atau array `(1,)`, sementara memory mengembalikan tensor. `BalancedReplayBatchSampler` kemudian memilih kelas secara merata dan mempertahankan `replay_memory_fraction` per batch.
+`ReplayDataset` mengonversi setiap label menjadi scalar `torch.long`. Ini mencegah error collate ketika dataset baru mengembalikan `int` atau array `(1,)`, sementara memory mengembalikan tensor. `BalancedReplayBatchSampler` kemudian memilih kelas secara merata dan mempertahankan porsi memori per batch.
+
+Dengan porsi tetap 0.5, kelas baru selalu mengisi separuh batch. Pada skenario satu kelas per task, kelas baru tampil `n_lama` kali lebih sering daripada tiap kelas lama, dan panjang epoch ikut membesar bersama ukuran kelas baru. Sejak 0.5.0 tersedia:
+
+- `replay_fraction_mode="proportional"`: porsi memori `n_lama / n_terlihat`;
+- `replay_epoch_length="pool"`: satu epoch = satu putaran atas data task berjalan + memori;
+- `replay_reaugment=True`: exemplar disimpan sebagai indeks dan diaugmentasi ulang setiap kali diputar ulang (LO2LN juga menyimpan path citra, bukan tensor beraugmentasi).
+
+Default ketiganya mempertahankan perilaku 0.4.0.
+
+## Perbedaan yang tetap ada terhadap LO2LN
+
+ADAIL meminjam ide LO2LN, bukan mereplikasinya. Perbedaan berikut perlu disebut saat membandingkan hasil:
+
+| Aspek | LO2LN (DER) | ADAIL |
+|---|---|---|
+| Ekspansi | stem–`layer2` dibagi; `layer3`+`layer4` disalin tiap task; fitur di-concat (dimensi bertambah) | stem–`layer3` dibagi; hanya `layer4` disalin; digabung lewat gated residual (dimensi tetap 512) |
+| Fase old | membekukan bobot classifier untuk dimensi fitur cabang terbaru | membekukan row classifier kelas baru |
+| Distillation | semua sampel | default hanya exemplar (`distill_memory_only`) |
+| Sampler LO2LN `balance` | tidak berpengaruh bila hanya satu kelas baru per task | balanced replay selalu aktif |
+| Memori | `fixed_memory`: jumlah per kelas tetap | adaptif; gunakan `memory_budget="per_seen_class"` untuk total yang sama |
 
 ## Hybrid memory
 
@@ -86,7 +110,7 @@ Gunakan seed, class order, augmentasi, memory size, epoch, dan split data yang s
 6. bandingkan `memory_selection: random`, `herding`, dan `hybrid`;
 7. bandingkan separation buffer-only (diagnostik) dengan `L_sep_diff`.
 
-Laporkan minimal average incremental accuracy, average forgetting, per-class accuracy, dan—untuk label ordinal—MAE serta QWK. Perubahan ini adalah hipotesis engineering; peningkatan akurasi harus dibuktikan melalui eksperimen berulang dan confidence interval, bukan diasumsikan dari desain.
+Laporkan minimal average incremental accuracy (`history["average_incremental_accuracy"]`, bukan `average_accuracy`), average forgetting, balanced accuracy, old→new confusion, per-class accuracy, dan—untuk label ordinal—MAE serta QWK. Perubahan ini adalah hipotesis engineering; peningkatan akurasi harus dibuktikan melalui eksperimen berulang dan confidence interval, bukan diasumsikan dari desain.
 
 ## Kompatibilitas
 

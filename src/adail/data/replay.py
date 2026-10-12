@@ -61,16 +61,20 @@ class BalancedReplayBatchSampler(Sampler[list[int]]):
         batch_size: int,
         memory_fraction: float = 0.5,
         seed: int = 1993,
+        epoch_length: str = "current",
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
         if not 0.0 <= memory_fraction < 1.0:
             raise ValueError("memory_fraction must be in [0, 1)")
+        if epoch_length not in {"current", "pool"}:
+            raise ValueError("epoch_length must be 'current' or 'pool'")
         self.current_labels = [int(x) for x in current_labels]
         self.memory_labels = [int(x) for x in memory_labels]
         self.batch_size = int(batch_size)
         self.memory_fraction = float(memory_fraction)
         self.seed = int(seed)
+        self.epoch_length = epoch_length
         self.epoch = 0
 
         requested_memory = int(round(self.batch_size * self.memory_fraction))
@@ -106,6 +110,12 @@ class BalancedReplayBatchSampler(Sampler[list[int]]):
         return [int(rng.choice(pools[int(class_id)])) for class_id in chosen_classes[:count]]
 
     def __len__(self) -> int:
+        if self.epoch_length == "pool":
+            # One pass over everything available for this task. Unlike the
+            # legacy length, this does not grow when the current share of the
+            # batch shrinks.
+            total = len(self.current_labels) + len(self.memory_labels)
+            return max(1, math.ceil(total / self.batch_size))
         return max(1, math.ceil(len(self.current_labels) / max(1, self.current_per_batch)))
 
     def __iter__(self) -> Iterator[list[int]]:

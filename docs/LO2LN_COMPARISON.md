@@ -112,10 +112,11 @@ adail compare-results \
 
 Agar perbandingan kuat untuk TA/sidang:
 
-1. Gunakan class order yang sama antara ADAIL dan LO2LN.
-2. Gunakan split train/test yang sama.
-3. Samakan memory budget.
-4. Laporkan average incremental accuracy dan average forgetting.
-5. Untuk EyePACS, tambahkan MAE dan QWK karena ADAIL punya ordinal constraint.
-6. Jalankan minimal 3 class orders bila mengikuti protokol LO2LN.
-7. Tulis jelas bahwa LO2LN memakai ekspansi representasi, sedangkan ADAIL menambahkan drift alignment, adaptive memory, prototype evolution, dan ordinal constraint.
+1. Gunakan class order yang sama antara ADAIL dan LO2LN. Indeks order di YAML LO2LN mengikuti penomoran label CSV LO2LN; bila ADAIL memakai `ImageFolder` (penomoran alfabetis), terjemahkan order lewat nama kelas. Untuk HAM10000 kedua penomoran berbeda (LO2LN: MEL=0, NV=1, BCC=2, AKIEC=3, BKL=4, DF=5, VASC=6; ImageFolder: akiec=0, bcc=1, bkl=2, df=3, mel=4, nv=5, vasc=6).
+2. Gunakan split train/test yang sama. LO2LN menyediakan split resmi di `data/ham10000/{train,val}.csv` dan `data/colorectal/{train,test}.csv`.
+3. Samakan memory budget: LO2LN `--fixed-memory` menyimpan `memory_size // num_classes` exemplar per kelas terlihat; di ADAIL pakai `memory_budget="per_seen_class"` dengan `memory_size` yang sama.
+4. Laporkan average incremental accuracy (`history["average_incremental_accuracy"]`, berbobot sampel) dan average forgetting. `history["average_accuracy"]` berbobot task dan **bukan** angka yang dilaporkan LO2LN. `adail compare-results` sudah memakai definisi yang benar.
+5. Bila YAML LO2LN ditulis untuk jumlah epoch berbeda dari yang dijalankan, sesuaikan milestone jadwal LR-nya; jika tidak, LR bisa turun ke 1% setelah beberapa epoch saja.
+6. Untuk dataset ordinal (EyePACS, RetinaMNIST), tambahkan MAE dan QWK karena ADAIL punya ordinal constraint.
+7. Jalankan minimal 3 class orders bila mengikuti protokol LO2LN.
+8. Tulis jelas bahwa LO2LN memakai ekspansi representasi, sedangkan ADAIL menambahkan drift alignment, adaptive memory, prototype evolution, dan ordinal constraint.

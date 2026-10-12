@@ -21,10 +21,12 @@ from .metrics import (
     accuracy,
     average_accuracy,
     average_forgetting,
+    average_incremental_accuracy,
+    classification_metrics,
     mean_absolute_error,
+    old_to_new_confusion,
     per_class_accuracy,
     quadratic_weighted_kappa,
-    classification_metrics,
 )
 from .models import ADAILNet
 from .modules import (
@@ -129,6 +131,63 @@ class ADAILTrainer:
         masked[:, ~allowed] = torch.finfo(logits.dtype).min / 2
         return masked
 
+    def _memory_capacity(self, num_seen_classes: int) -> int | None:
+        """Exemplars to keep after a task; None means the whole memory_size."""
+
+        if self.config.memory_budget == "global":
+            return None
+        per_class = self.config.memory_size // max(1, self.config.num_classes)
+        return per_class * num_seen_classes
+
+    def _step_with_frozen_rows(self, optimizer: torch.optim.Optimizer, rows: list[int]) -> None:
+        """Run ``optimizer.step()`` leaving the given classifier rows untouched.
+
+        Zeroing their gradient is not enough: SGD momentum and weight decay
+        would still move them. Their values and momentum are restored instead,
+        matching a parameter that sits out the step.
+        """
+
+        classifier = self.model.classifier
+        params = [
+            param
+            for param in (getattr(classifier, "weight", None), getattr(classifier, "bias", None))
+            if isinstance(param, torch.Tensor) and param.requires_grad
+        ]
+        if not rows or not params:
+            optimizer.step()
+            return
+        index = torch.as_tensor(rows, dtype=torch.long, device=params[0].device)
+        saved = []
+        for param in params:
+            buffer = optimizer.state.get(param, {}).get("momentum_buffer")
+            saved.append(
+                (
+                    param,
+                    param.detach()[index].clone(),
+                    None if buffer is None else buffer[index].clone(),
+                )
+            )
+        optimizer.step()
+        with torch.no_grad():
+            for param, values, buffer in saved:
+                param[index] = values
+                state_buffer = optimizer.state.get(param, {}).get("momentum_buffer")
+                if state_buffer is not None:
+                    state_buffer[index] = 0 if buffer is None else buffer
+
+    def _replay_memory_fraction(self, replay_dataset: ReplayDataset) -> float:
+        """Share of each balanced batch reserved for exemplars."""
+
+        if self.config.replay_fraction_mode == "fixed":
+            return self.config.replay_memory_fraction
+        # Proportional: n_old / n_seen, so every seen class gets about the same
+        # number of slots per batch.
+        new_classes = set(replay_dataset.current_targets)
+        old_classes = set(replay_dataset.memory_targets) - new_classes
+        if not old_classes:
+            return 0.0
+        return len(old_classes) / (len(old_classes) + len(new_classes))
+
     def _build_train_loader(
         self,
         current_dataset: Dataset,
@@ -142,8 +201,9 @@ class ADAILTrainer:
                 replay_dataset.current_targets,
                 replay_dataset.memory_targets,
                 batch_size=batch_size,
-                memory_fraction=self.config.replay_memory_fraction,
+                memory_fraction=self._replay_memory_fraction(replay_dataset),
                 seed=self.config.sampler_seed,
+                epoch_length=self.config.replay_epoch_length,
             )
             loader = DataLoader(
                 replay_dataset,
@@ -191,17 +251,40 @@ class ADAILTrainer:
         epochs_per_task: int = 1,
         batch_size: int = 32,
         num_workers: int = 0,
+        train_eval_dataset: Dataset | None = None,
     ) -> dict[str, Any]:
-        """Train through every task and return serializable continual metrics."""
+        """Train through every task and return serializable continual metrics.
 
+        ``train_eval_dataset`` holds the same samples as ``train_dataset``, in the
+        same order, but with the deterministic evaluation transform. When given,
+        weight imprinting, the prototype refresh and exemplar scoring see clean
+        images instead of randomly augmented ones (LO2LN also extracts herding
+        features with its test transform).
+        """
+
+        if train_eval_dataset is not None and len(train_eval_dataset) != len(train_dataset):
+            raise ValueError("train_eval_dataset must hold the same samples as train_dataset")
         task_accuracy_matrix: list[list[float]] = []
         task_results: list[TaskResult] = []
+        if self.config.replay_reaugment:
+            # Exemplars are kept as indices into train_dataset and reloaded
+            # through its training transform each time they are replayed.
+            self.memory.source_dataset = train_dataset
+        # Index-based exemplars are scored through the clean view when available.
+        scoring_source = train_eval_dataset
 
         for task_idx, task_classes in enumerate(scenario.tasks):
             seen_classes = scenario.seen_classes_until(task_idx)
             old_classes = scenario.seen_classes_until(task_idx - 1) if task_idx > 0 else []
             self.current_seen_classes = seen_classes
             current_task_dataset = DatasetSubsetByClass(train_dataset, task_classes)
+            current_scoring_dataset: Dataset = current_task_dataset
+            if train_eval_dataset is not None:
+                current_scoring_dataset = DatasetSubsetByClass(train_eval_dataset, task_classes)
+                if current_scoring_dataset.indices != current_task_dataset.indices:
+                    raise ValueError(
+                        "train_eval_dataset must list the same samples as train_dataset"
+                    )
             for class_id, count in self._count_classes(current_task_dataset).items():
                 self.observed_class_counts[class_id] = (
                     self.observed_class_counts.get(class_id, 0) + count
@@ -215,7 +298,7 @@ class ADAILTrainer:
 
             if self.config.imprint_new_classes:
                 self.imprint_new_classes(
-                    current_task_dataset,
+                    current_scoring_dataset,
                     list(task_classes),
                     batch_size,
                     num_workers,
@@ -256,8 +339,14 @@ class ADAILTrainer:
                 epoch_logs.append(logs)
 
             self.model.configure_phase("new")
+            refresh_dataset: Dataset = replay_dataset
+            if train_eval_dataset is not None:
+                refresh_dataset = ReplayDataset(
+                    current_scoring_dataset,
+                    self.memory.as_dataset(source=scoring_source) if len(self.memory) else None,
+                )
             refresh_loader = DataLoader(
-                replay_dataset,
+                refresh_dataset,
                 batch_size=batch_size,
                 shuffle=False,
                 num_workers=num_workers,
@@ -292,17 +381,36 @@ class ADAILTrainer:
             self._update_forgetting_estimates(class_scores)
 
             # Rebuild after evaluation so adaptive quotas use fresh forgetting.
-            memory_before_update = self.memory.as_dataset() if len(self.memory) else None
-            memory_candidates: Dataset = current_task_dataset
+            memory_before_update = (
+                self.memory.as_dataset(source=scoring_source) if len(self.memory) else None
+            )
+            memory_candidates: Dataset = current_scoring_dataset
             if memory_before_update is not None:
-                memory_candidates = ReplayDataset(current_task_dataset, memory_before_update)
+                memory_candidates = ReplayDataset(current_scoring_dataset, memory_before_update)
+            # Candidates are referenced by dataset index whenever that is enough
+            # to recover them: with re-augmentation, or when the clean view can
+            # reload the selected exemplars as fixed tensors. Only the selected
+            # exemplars are then held in RAM, not every candidate image.
+            # Same order as the unshuffled candidate loader: current task first,
+            # then the previous exemplars.
+            candidate_sources: list[int | None] | None = None
+            if self.config.replay_reaugment or train_eval_dataset is not None:
+                candidate_sources = list(current_task_dataset.indices)
+                if memory_before_update is not None:
+                    candidate_sources.extend(memory_before_update.source_indices)
             candidate_loader = DataLoader(
                 memory_candidates,
                 batch_size=batch_size,
                 shuffle=False,
                 num_workers=num_workers,
             )
-            self.update_memory(candidate_loader, replace=True)
+            self.update_memory(
+                candidate_loader,
+                replace=True,
+                source_indices=candidate_sources,
+                capacity=self._memory_capacity(len(seen_classes)),
+                materialize_from=None if self.config.replay_reaugment else train_eval_dataset,
+            )
 
             metrics_by_task.update(
                 {
@@ -311,7 +419,12 @@ class ADAILTrainer:
                     "seen_qwk": float(seen_metrics["qwk"]),
                     "seen_precision": float(seen_metrics.get("precision", 0.0)),
                     "seen_recall": float(seen_metrics.get("recall", 0.0)),
+                    # Macro recall over the seen classes.
+                    "seen_balanced_accuracy": float(seen_metrics.get("recall", 0.0)),
                     "seen_f1": float(seen_metrics.get("f1", 0.0)),
+                    "old_to_new_confusion": old_to_new_confusion(
+                        seen_metrics.get("confusion_matrix", []), old_classes, list(task_classes)
+                    ),
                     "confusion_matrix": seen_metrics.get("confusion_matrix", []),
                     "last_loss": float(epoch_logs[-1]["loss"]) if epoch_logs else 0.0,
                 }
@@ -344,7 +457,16 @@ class ADAILTrainer:
                 for result in task_results
             ],
             "accuracy_matrix": task_accuracy_matrix,
+            # Task-weighted; kept for compatibility with 0.4.0 histories.
             "average_accuracy": average_accuracy(task_accuracy_matrix),
+            # Sample-weighted, as reported by iCaRL/LO2LN.
+            "average_incremental_accuracy": average_incremental_accuracy(
+                [result.metrics["seen_accuracy"] for result in task_results]
+            ),
+            "average_old_to_new_confusion": (
+                sum(result.metrics["old_to_new_confusion"] for result in task_results[1:])
+                / max(1, len(task_results) - 1)
+            ),
             "average_forgetting": average_forgetting(task_accuracy_matrix),
             "class_forgetting": dict(self.class_forgetting),
             "observed_class_counts": dict(self.observed_class_counts),
@@ -453,8 +575,11 @@ class ADAILTrainer:
                     confidence_threshold=self.config.distill_confidence_threshold,
                 )
 
+            ranking_scores = (
+                outputs["cosine_logits"] if self.config.ranking_space == "cosine" else logits_raw
+            )
             loss_ranking = old_new_margin_ranking_loss(
-                logits_raw,
+                ranking_scores,
                 labels,
                 old_classes,
                 new_classes,
@@ -485,8 +610,10 @@ class ADAILTrainer:
             )
             total.backward()
             if phase == "old":
-                self.model.mask_new_class_gradients(new_classes)
-            optimizer.step()
+                # New-class classifier rows sit out the stability phase entirely.
+                self._step_with_frozen_rows(optimizer, new_classes)
+            else:
+                optimizer.step()
 
             with torch.no_grad():
                 self.model.prototypes.update(features.detach(), labels)
@@ -522,8 +649,20 @@ class ADAILTrainer:
             )
 
     @torch.no_grad()
-    def update_memory(self, loader: DataLoader, *, replace: bool = True) -> None:
+    def update_memory(
+        self,
+        loader: DataLoader,
+        *,
+        replace: bool = True,
+        source_indices: list[int | None] | None = None,
+        capacity: int | None = None,
+        materialize_from: Dataset | None = None,
+    ) -> None:
         self.model.eval()
+        # With a source index for every candidate, the candidate images need not
+        # be kept in RAM: exemplars are stored as indices, or reloaded from
+        # `materialize_from` once selected.
+        keep_images = source_indices is None or any(index is None for index in source_indices)
         images_all: list[torch.Tensor] = []
         labels_all: list[torch.Tensor] = []
         logits_all: list[torch.Tensor] = []
@@ -534,14 +673,15 @@ class ADAILTrainer:
             labels_device = labels.to(self.device, dtype=torch.long)
             outputs = self.model.forward_details(images_device)
             logits = self._mask_logits(outputs["logits"], self.current_seen_classes)
-            images_all.append(images.cpu())
+            if keep_images:
+                images_all.append(images.cpu())
             labels_all.append(labels_device.cpu())
             logits_all.append(logits.cpu())
             features_all.append(outputs["features"].cpu())
 
-        if images_all:
+        if labels_all:
             self.memory.update_from_tensors(
-                images=torch.cat(images_all),
+                images=torch.cat(images_all) if keep_images else None,
                 labels=torch.cat(labels_all),
                 logits=torch.cat(logits_all),
                 features=torch.cat(features_all),
@@ -551,6 +691,9 @@ class ADAILTrainer:
                 selection=self.config.memory_selection,
                 representative_fraction=self.config.memory_representative_fraction,
                 uncertainty_fraction=self.config.memory_uncertainty_fraction,
+                source_indices=source_indices,
+                capacity=capacity,
+                materialize_from=materialize_from,
             )
 
     @torch.no_grad()

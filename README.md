@@ -1,6 +1,6 @@
 # ADAIL: Adaptive Drift-Aware Incremental Learning
 
-**ADAIL** adalah library PyTorch untuk **Class-Incremental Learning (CIL) pada klasifikasi citra medis**. Repository ini disusun agar siap diunggah ke GitHub, diinstal dengan `pip`, dan digunakan sebagai library Python maupun command-line tool.
+**ADAIL** adalah library PyTorch untuk **Class-Incremental Learning (CIL) pada klasifikasi citra medis**. Library ini dapat diinstal dengan `pip` dan dipakai sebagai library Python maupun command-line tool.
 
 > Status: implementasi riset. Library ini bukan alat diagnosis klinis dan harus divalidasi secara medis, statistik, dan regulatori sebelum dipakai dalam sistem kesehatan nyata.
 
@@ -8,39 +8,53 @@
 
 ## Inti Metode
 
-ADAIL mengikuti rancangan proposal *Adaptive Drift-Aware Incremental Learning untuk Klasifikasi Citra Medis* dengan empat komponen utama:
+ADAIL mengikuti rancangan proposal *Adaptive Drift-Aware Incremental Learning untuk Klasifikasi Citra Medis* dan memperluasnya dengan strategi stabilitas/plastisitas yang terinspirasi LO2LN (tanpa menyalin kode LO2LN):
 
-1. **Drift-Aware Feature Alignment**  
-   Menyelaraskan fitur model saat ini dengan fitur frozen teacher dari task sebelumnya untuk menekan *temporal feature drift*.
-
-2. **Adaptive Memory Allocation**  
-   Membagi kuota exemplar secara dinamis berdasarkan:
-   - uncertainty,
-   - forgetting rate,
-   - class rarity.
-
-3. **Prototype Evolution**  
-   Mempertahankan prototipe kelas dengan pembaruan exponential moving average agar stabil, tetapi tetap adaptif.
-
-4. **Ordinal Constraint Learning**  
-   Menjaga struktur progresi penyakit, terutama untuk dataset ordinal seperti EyePACS: `No DR -> Mild -> Moderate -> Severe -> Proliferative`.
+1. **Drift-Aware Feature Alignment** — menyelaraskan fitur model saat ini dengan fitur frozen teacher dari task sebelumnya.
+2. **Adaptive Memory Allocation** — kuota exemplar per kelas dari uncertainty, forgetting rate, dan class rarity.
+3. **Prototype Evolution** — prototipe kelas diperbarui dengan exponential moving average.
+4. **Ordinal Constraint Learning** — menjaga urutan stadium penyakit pada dataset ordinal seperti EyePACS atau RetinaMNIST.
+5. **Selective Representation Expansion** — salinan `layer4` ResNet-18 per task inkremental, digabung lewat gated residual berdimensi tetap.
+6. **Alternating Stability/Plasticity Objectives** — fase `new` mempelajari kelas baru; fase `old` membekukan cabang terbaru dan row classifier kelas baru, lalu memperkuat distillation dan margin ranking.
+7. **Balanced Classification and Replay** — cosine classifier, weight imprinting, class-balanced focal loss, dan batch sampler yang mencampur data baru dengan exemplar.
+8. **Hybrid Exemplar Selection** — herding, uncertainty, dan k-center diversity.
 
 Total loss:
 
 ```text
-L_total = L_ce
+L_total = L_cb_focal
+        + lambda_aux     * L_aux
+        + lambda_kd      * L_distill
+        + lambda_rank    * L_ranking      (margin pada similarity cosine)
         + lambda_drift   * L_drift
-        + lambda_proto   * L_proto
-        + lambda_sep     * L_sep
+        + lambda_proto   * L_compact
+        + lambda_sep     * L_sep_diff
         + lambda_ordinal * L_ordinal
 ```
+
+Rumus lengkap ada di [`docs/FORMULAS.md`](docs/FORMULAS.md).
+
+### Perubahan penting di 0.5.0
+
+| Masalah di 0.4.0 | Perbaikan |
+|---|---|
+| Margin ranking diterapkan pada logit yang sudah dikali skala cosine (≈10), sehingga margin 0.2 efektif 0.02 | Margin diukur pada similarity cosine (`ranking_space="cosine"`, default) |
+| Fase `old` hanya me-nol-kan gradien row kelas baru; momentum dan weight decay tetap menggesernya | Nilai dan momentum row dipulihkan setelah `optimizer.step()` |
+| Kelas baru selalu mengisi 50% batch replay, berapa pun jumlah kelas lama | `replay_fraction_mode="proportional"` (opsional) |
+| Panjang epoch ikut membesar bersama ukuran kelas baru | `replay_epoch_length="pool"` (opsional) |
+| Exemplar disimpan sebagai satu tensor beraugmentasi yang tidak pernah berubah | `replay_reaugment=True` (opsional) |
+| Memori penuh sejak task pertama, tidak sebanding dengan `fixed_memory` LO2LN | `memory_budget="per_seen_class"` (opsional) |
+| Imprinting, refresh prototipe, dan skor exemplar memakai citra beraugmentasi acak | `fit_scenario(..., train_eval_dataset=...)` (opsional) |
+| `history["average_accuracy"]` berbobot task, tetapi dibandingkan dengan angka LO2LN yang berbobot sampel | `history["average_incremental_accuracy"]`; `compare-results` memakai definisi ini |
+
+Opsi bertanda *opsional* defaultnya mempertahankan perilaku 0.4.0, sehingga hasil lama tetap dapat direproduksi.
 
 ---
 
 ## Instalasi
 
 ```bash
-git clone https://github.com/your-username/ADAIL.git
+git clone https://github.com/Hokimastah/ADAIL.git
 cd ADAIL
 python -m pip install -e .
 ```
@@ -63,17 +77,12 @@ dataset_root/
   train/
     class_0/
       image_001.png
-    class_1/
-      image_002.png
   val/          # optional
-    class_0/
-    class_1/
   test/
     class_0/
-    class_1/
 ```
 
-Pastikan urutan folder/class sesuai label yang ingin dipakai. Untuk EyePACS ordinal, urutan yang disarankan:
+Indeks kelas mengikuti urutan alfabetis nama folder. Untuk EyePACS ordinal, urutan yang disarankan:
 
 ```text
 0: no_dr
@@ -83,17 +92,15 @@ Pastikan urutan folder/class sesuai label yang ingin dipakai. Untuk EyePACS ordi
 4: proliferative
 ```
 
+Bila membandingkan dengan LO2LN, perhatikan bahwa penomoran label LO2LN (dari CSV manifest-nya) bisa berbeda dari penomoran alfabetis ImageFolder; lihat [`docs/LO2LN_COMPARISON.md`](docs/LO2LN_COMPARISON.md).
+
 ---
 
-## Dataset Preset Proposal
-
-Lihat preset:
+## Dataset Preset
 
 ```bash
 adail list-presets
 ```
-
-Preset yang tersedia:
 
 | Preset | Jumlah kelas | Default scenario | Ordinal | Keterangan |
 |---|---:|---|---|---|
@@ -101,30 +108,15 @@ Preset yang tersedia:
 | `ham10000` | 7 | `3-1`, `3-2` | Tidak | Dermatoskopi, long-tail imbalance |
 | `eyepacs` | 5 | `3-1`, `3-2` | Ya | Retinopati diabetik, progresi stadium |
 
-Config siap pakai tersedia di folder `configs/`:
-
-```text
-configs/cch5000_4_1.yaml
-configs/cch5000_4_2.yaml
-configs/ham10000_3_1.yaml
-configs/ham10000_3_2.yaml
-configs/eyepacs_3_1.yaml
-configs/eyepacs_3_2.yaml
-```
+Config siap pakai tersedia di folder `configs/`.
 
 ---
 
 ## Quick Start: CLI
 
-Membuat config proposal-aligned:
-
 ```bash
 adail init-config --dataset eyepacs --scenario 3-1 --output config.yaml
-```
 
-Training dengan YAML:
-
-```bash
 adail train \
   --config configs/eyepacs_3_1.yaml \
   --data /path/to/eyepacs_imagefolder \
@@ -132,27 +124,7 @@ adail train \
   --epochs 5
 ```
 
-Training langsung tanpa YAML:
-
-```bash
-adail train \
-  --dataset ham10000 \
-  --data /path/to/ham10000_imagefolder \
-  --output runs/ham10000_3_2 \
-  --scenario 3-2 \
-  --epochs 5 \
-  --batch-size 32 \
-  --memory-size 2000
-```
-
-Output utama:
-
-```text
-runs/<experiment>/
-  config.yaml
-  history.json
-  adail_last.pt
-```
+Output utama: `runs/<experiment>/config.yaml`, `history.json`, `adail_last.pt`.
 
 ---
 
@@ -160,128 +132,101 @@ runs/<experiment>/
 
 ```python
 import torch
+from torchvision.datasets import ImageFolder
+
 from adail import ADAILConfig, ADAILNet, ADAILTrainer
-from adail.data import build_imagefolder_loaders, ClassIncrementalScenario
+from adail.data import ClassIncrementalScenario, build_eval_transform, build_train_transform
 
 config = ADAILConfig(
     num_classes=5,
-    memory_size=2000,
+    memory_size=500,
     use_ordinal=True,
-    lambda_drift=1.0,
-    lambda_proto=0.2,
-    lambda_sep=0.1,
-    lambda_ordinal=0.1,
-)
-config.data.scenario = "3-1"
-
-loaders = build_imagefolder_loaders(
-    root="/path/to/eyepacs_imagefolder",
-    image_size=224,
-    batch_size=32,
-    num_workers=4,
+    # Opsi 0.5.0 (opsional):
+    replay_fraction_mode="proportional",
+    replay_epoch_length="pool",
+    replay_reaugment=True,
+    memory_budget="per_seen_class",
 )
 
-scenario = ClassIncrementalScenario.from_string(
-    num_classes=config.num_classes,
-    spec=config.data.scenario,
-)
+root = "/path/to/eyepacs_imagefolder"
+train_dataset = ImageFolder(f"{root}/train", transform=build_train_transform(224))
+# Sampel yang sama dengan transform evaluasi, untuk imprinting/prototipe/skor exemplar.
+train_eval_dataset = ImageFolder(f"{root}/train", transform=build_eval_transform(224))
+test_dataset = ImageFolder(f"{root}/test", transform=build_eval_transform(224))
 
-model = ADAILNet(
-    # Task 0 is a true 3-class model; the trainer expands it to 4 and 5.
-    num_classes=max(scenario.tasks[0]) + 1,
-    pretrained_backbone=True,
-    prototype_momentum=config.prototype_momentum,
-    prototype_margin=config.prototype_margin,
-)
-
-trainer = ADAILTrainer(
-    model=model,
-    config=config,
-    device="cuda" if torch.cuda.is_available() else "cpu",
-)
+# Classifier dibuat untuk seluruh kelas sejak awal; kelas yang belum terlihat
+# di-mask dari loss dan evaluasi.
+model = ADAILNet.from_config(config, pretrained_backbone=True)
+trainer = ADAILTrainer(model, config, device="cuda" if torch.cuda.is_available() else "cpu")
+scenario = ClassIncrementalScenario.from_string(config.num_classes, "3-1")
 
 history = trainer.fit_scenario(
-    train_dataset=loaders.train.dataset,
-    test_dataset=loaders.test.dataset,
+    train_dataset=train_dataset,
+    test_dataset=test_dataset,
     scenario=scenario,
     epochs_per_task=5,
     batch_size=32,
+    train_eval_dataset=train_eval_dataset,
 )
-print(history["average_accuracy"], history["average_forgetting"])
+print(history["average_incremental_accuracy"], history["average_forgetting"])
 ```
 
 ---
 
-## Protocol CIL yang Diikuti
-
-ADAIL memakai protokol class-incremental:
+## Protokol CIL
 
 1. **Task basis** melatih kelas awal, misalnya `4-1` berarti 4 kelas pertama sebagai basis.
-2. **Task inkremental** hanya menerima kelas baru pada task berjalan.
-3. Untuk kelas lama, trainer hanya memakai **exemplar memory**, bukan seluruh dataset historis.
-4. Pada setiap task, model menyimpan frozen teacher dari task sebelumnya untuk drift alignment.
-5. Classifier dan prototype bank bertambah hanya ketika kelas baru terlihat.
-6. Prototype dan memory diperbarui setelah task selesai.
-
-Untuk skenario prefix-ordered seperti `3-1`, trainer juga memperbaiki pemanggil
-lama yang masih membuat head final sejak awal: sebelum Task 0, head otomatis
-diperkecil menjadi 3 kelas, lalu diperluas menjadi 4 dan 5 kelas.
+2. **Task inkremental** hanya menerima data kelas baru; kelas lama hanya hadir lewat **exemplar memory**.
+3. Sebelum setiap task inkremental, model saat ini dibekukan sebagai teacher untuk drift alignment dan distillation.
+4. Bila `dynamic_expansion=True`, cabang representasi baru ditambahkan dan fase `new`/`old` dioptimalkan bergantian.
+5. Setelah task selesai: prototipe direfresh, model dievaluasi, lalu kuota dan exemplar memory dibangun ulang.
 
 ---
 
 ## Metrik Evaluasi
 
-Tersedia di `adail.metrics`:
+`history` (dan `history.json` dari CLI) menyimpan:
 
-- `accuracy`
-- `average_accuracy`
-- `average_forgetting`
-- `per_class_accuracy`
-- `mean_absolute_error`
-- `quadratic_weighted_kappa`
+- `average_incremental_accuracy` — rata-rata atas task dari akurasi pada seluruh sampel test kelas terlihat (berbobot sampel; **ini yang dilaporkan LO2LN/iCaRL**);
+- `average_accuracy` — rata-rata atas task dari rata-rata akurasi per blok task (berbobot task);
+- `average_forgetting`, per-class forgetting, dan accuracy matrix;
+- per task: `seen_accuracy`, `seen_balanced_accuracy`, macro precision/recall/F1, MAE, QWK, confusion matrix, `old_to_new_confusion`;
+- `average_old_to_new_confusion` — bias rata-rata ke kelas yang baru ditambahkan;
+- kuota memori per task dan log loss per epoch (termasuk nama fase `new`/`old`).
 
-`history.json` menyimpan:
+---
 
-- accuracy matrix per task,
-- average accuracy,
-- average forgetting,
-- per-class forgetting,
-- memory quota per task,
-- MAE dan QWK untuk evaluasi ordinal.
+## Checkpoint
+
+```python
+trainer.save_checkpoint("adail_last.pt")
+trainer.load_checkpoint("adail_last.pt")
+```
+
+Checkpoint hanya berisi tensor dan container primitif, sehingga dapat dimuat dengan `weights_only=True` (PyTorch 2.6+). Dengan `replay_reaugment=True`, exemplar disimpan sebagai indeks dataset; setelah memuat checkpoint, pasang kembali dataset latihnya:
+
+```python
+trainer.memory.source_dataset = train_dataset
+```
+
+Jangan memuat checkpoint dari sumber yang tidak dipercaya.
 
 ---
 
 ## Membandingkan ADAIL dengan LO2LN
 
-Repository resmi LO2LN dapat dipakai sebagai baseline eksternal:
-
 ```bash
 git clone https://github.com/EvelynChee/LO2LN.git external/LO2LN
-```
 
-Buat command LO2LN yang sejajar dengan skenario proposal:
+adail lo2ln-command --lo2ln-root external/LO2LN --dataset eyepacs --scenario 3-1 \
+  --data-path data/diabetic --device 0 --output-script scripts/run_lo2ln_eyepacs_3_1.sh
 
-```bash
-adail lo2ln-command \
-  --lo2ln-root external/LO2LN \
-  --dataset eyepacs \
-  --scenario 3-1 \
-  --data-path data/diabetic \
-  --device 0 \
-  --output-script scripts/run_lo2ln_eyepacs_3_1.sh
-```
-
-Buat tabel perbandingan dari hasil ADAIL dan angka LO2LN:
-
-```bash
-adail compare-results \
-  --dataset eyepacs \
-  --scenario 3-1 \
+adail compare-results --dataset eyepacs --scenario 3-1 \
   --adail-history runs/adail_eyepacs_3_1/history.json \
   --output reports/compare_eyepacs_3_1.md
 ```
 
-Panduan lengkap ada di `docs/LO2LN_COMPARISON.md`.
+Checklist kewajaran perbandingan (class order, split, memory budget, metrik, jadwal LR) ada di [`docs/LO2LN_COMPARISON.md`](docs/LO2LN_COMPARISON.md). Perbedaan desain yang tetap ada antara ADAIL dan LO2LN dirangkum di [`docs/LO2LN_ENHANCEMENTS.md`](docs/LO2LN_ENHANCEMENTS.md).
 
 ---
 
@@ -289,30 +234,27 @@ Panduan lengkap ada di `docs/LO2LN_COMPARISON.md`.
 
 ```text
 ADAIL/
-  configs/                 # konfigurasi eksperimen proposal
-  docs/                    # formula dan mapping implementasi
+  configs/                 # konfigurasi eksperimen
+  docs/                    # formula, mapping implementasi, panduan LO2LN
   examples/                # contoh penggunaan
-  benchmarks/             # template eksperimen ADAIL vs LO2LN
-  docs/                    # formula, mapping, dan panduan LO2LN comparison
+  benchmarks/              # template eksperimen ADAIL vs LO2LN
   scripts/                 # helper benchmark/report
   src/adail/
     baselines/             # adapter command LO2LN eksternal
     benchmarking/          # pembuat tabel laporan perbandingan
-    data/                  # ImageFolder, CIL scenario, preset dataset
-    models/                # ADAILNet dan ResNet-18 backbone
-    modules/               # drift, prototype, ordinal losses
+    data/                  # dataset, scenario, balanced replay
+    models/                # ADAILNet dan expandable ResNet-18
+    modules/               # drift, prototype, focal, KD, ranking, ordinal
     memory.py              # adaptive exemplar memory
     metrics.py             # metrik CIL dan ordinal
     trainer.py             # training loop CIL
     cli.py                 # command-line interface
-  tests/                   # unit tests
+  tests/                   # unit dan integration tests
 ```
 
 ---
 
 ## Contoh Synthetic
-
-Untuk cek cepat tanpa dataset medis:
 
 ```bash
 python examples/minimal_synthetic.py
@@ -322,13 +264,6 @@ python examples/minimal_synthetic.py
 
 ## Catatan Reproduksibilitas
 
-Default library mengikuti proposal:
-
-- backbone ResNet-18 pretrained ImageNet,
-- optimizer SGD dengan momentum,
-- input 2D image classification,
-- skenario CIL `4-1`, `4-2`, `3-1`, `3-2`,
-- memory exemplar adaptif,
-- evaluasi accuracy, forgetting, MAE, dan QWK.
-
-Repository ini juga menyediakan adapter pembanding untuk **LO2LN** sebagai baseline eksternal. Kode LO2LN tidak disalin ke package ADAIL; adapter hanya membuat command resmi agar eksperimen dapat dijalankan fair dan hasilnya dapat dirangkum bersama ADAIL.
+- Backbone ResNet-18 pretrained ImageNet, optimizer SGD + momentum, tanpa scheduler LR.
+- `sampler_seed` mengendalikan batch balanced replay; seleksi exemplar `random` memakai seed per kelas yang tetap.
+- Jalankan beberapa class order (dan idealnya beberapa seed), lalu laporkan rata-rata ± simpangan baku; selisih antar-varian yang lebih kecil dari simpangan bakunya bukan bukti peningkatan.

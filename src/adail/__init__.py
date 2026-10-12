@@ -9,7 +9,9 @@ from .metrics import (
     accuracy,
     average_accuracy,
     average_forgetting,
+    average_incremental_accuracy,
     mean_absolute_error,
+    old_to_new_confusion,
     per_class_accuracy,
     quadratic_weighted_kappa,
 )
@@ -27,9 +29,11 @@ __all__ = [
     "accuracy",
     "average_accuracy",
     "average_forgetting",
+    "average_incremental_accuracy",
     "mean_absolute_error",
+    "old_to_new_confusion",
     "per_class_accuracy",
     "quadratic_weighted_kappa",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

@@ -36,11 +36,18 @@ class CosineClassifier(nn.Module):
         else:
             self.register_buffer("logit_scale", scale_tensor)
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
+    def cosine(self, features: torch.Tensor) -> torch.Tensor:
+        """Cosine similarity to every class weight, before the learned scale."""
+
         features = F.normalize(features, dim=1)
         weights = F.normalize(self.weight, dim=1)
-        scale = self.logit_scale.clamp(1e-3, 100.0)
-        return scale * F.linear(features, weights)
+        return F.linear(features, weights)
+
+    def scale_logits(self, cosine: torch.Tensor) -> torch.Tensor:
+        return self.logit_scale.clamp(1e-3, 100.0) * cosine
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.scale_logits(self.cosine(features))
 
     @torch.no_grad()
     def imprint(self, class_ids: list[int], vectors: torch.Tensor) -> None:
@@ -56,13 +63,22 @@ class CosineClassifier(nn.Module):
     def expand(self, new_num_classes: int) -> None:
         if new_num_classes <= self.out_features:
             return
+        self.resize(new_num_classes)
+
+    def resize(self, num_classes: int) -> None:
+        """Grow (new rows randomly initialized) or shrink to `num_classes` rows."""
+
+        num_classes = int(num_classes)
+        if num_classes == self.out_features:
+            return
         old_weight = self.weight
-        new_weight = old_weight.new_empty(new_num_classes, self.in_features)
+        new_weight = old_weight.new_empty(num_classes, self.in_features)
         nn.init.kaiming_normal_(new_weight, nonlinearity="linear")
+        kept = min(num_classes, self.out_features)
         with torch.no_grad():
-            new_weight[: self.out_features].copy_(old_weight)
+            new_weight[:kept].copy_(old_weight[:kept])
         self.weight = nn.Parameter(new_weight)
-        self.out_features = int(new_num_classes)
+        self.out_features = num_classes
 
 
 class ADAILNet(nn.Module):
@@ -169,12 +185,23 @@ class ADAILNet(nn.Module):
             features = torch.flatten(features, 1)
         if latest_features.ndim > 2:
             latest_features = torch.flatten(latest_features, 1)
+        logits, cosine_logits = self._classify(features)
         return {
-            "logits": self.classifier(features),
+            "logits": logits,
+            # Unscaled cosine similarities for a cosine classifier (equal to
+            # "logits" for a linear one); margins are measured in this space.
+            "cosine_logits": cosine_logits,
             "features": features,
             "aux_logits": self.classifier(latest_features),
             "latest_features": latest_features,
         }
+
+    def _classify(self, features: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(self.classifier, CosineClassifier):
+            cosine = self.classifier.cosine(features)
+            return self.classifier.scale_logits(cosine), cosine
+        logits = self.classifier(features)
+        return logits, logits
 
     def forward(self, x: torch.Tensor, return_features: bool = False):
         outputs = self.forward_details(x)
@@ -230,7 +257,12 @@ class ADAILNet(nn.Module):
         return self.num_branches > 1 and hasattr(self.backbone, "forward_details")
 
     def mask_new_class_gradients(self, new_classes: list[int]) -> None:
-        """Freeze new-class classifier rows during the old-knowledge phase."""
+        """Zero the gradient of new-class classifier rows.
+
+        Zeroing the gradient alone does not freeze the rows under SGD with
+        momentum or weight decay; the trainer restores them around the
+        optimizer step instead (see ``ADAILTrainer._step_with_frozen_rows``).
+        """
 
         weight = getattr(self.classifier, "weight", None)
         if weight is not None and weight.grad is not None and new_classes:
@@ -272,15 +304,31 @@ class ADAILNet(nn.Module):
 
         if new_num_classes <= self.num_classes:
             return
+        self.resize_classes(new_num_classes)
+
+    def resize_classes(self, num_classes: int) -> None:
+        """Grow or shrink the classifier and prototype bank.
+
+        Rows of classes that exist before and after are kept; new rows are
+        freshly initialized and new prototypes start uninitialized.
+        """
+
+        num_classes = int(num_classes)
+        if num_classes < 1:
+            raise ValueError("num_classes must be positive")
+        if num_classes == self.num_classes:
+            return
         if isinstance(self.classifier, CosineClassifier):
-            self.classifier.expand(new_num_classes)
+            self.classifier.resize(num_classes)
         else:
             old_classifier = self.classifier
-            new_classifier = nn.Linear(self.feature_dim, new_num_classes).to(
-                old_classifier.weight.device
-            )
+            new_classifier = nn.Linear(
+                self.feature_dim, num_classes, bias=old_classifier.bias is not None
+            ).to(old_classifier.weight.device)
+            kept = min(num_classes, old_classifier.out_features)
             with torch.no_grad():
-                new_classifier.weight[: old_classifier.out_features].copy_(old_classifier.weight)
-                new_classifier.bias[: old_classifier.out_features].copy_(old_classifier.bias)
+                new_classifier.weight[:kept].copy_(old_classifier.weight[:kept])
+                if old_classifier.bias is not None:
+                    new_classifier.bias[:kept].copy_(old_classifier.bias[:kept])
             self.classifier = new_classifier
-        self.prototypes.expand(new_num_classes)
+        self.prototypes.resize(num_classes)

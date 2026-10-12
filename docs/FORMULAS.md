@@ -18,7 +18,7 @@ Kuota exemplar kelas `c` dihitung dari tiga sinyal proposal: uncertainty, forget
 
 ```text
 score_c = alpha * U_c + beta * F_c + gamma * R_c
-quota_c = floor(memory_size * score_c / sum_j score_j)
+quota_c = floor(M_t * score_c / sum_j score_j)
 ```
 
 Keterangan:
@@ -26,6 +26,11 @@ Keterangan:
 - `U_c`: rata-rata entropy prediksi kelas `c`.
 - `F_c`: penurunan akurasi kelas `c` dari nilai terbaik historisnya.
 - `R_c`: nilai kelangkaan kelas, dihitung terbalik dari jumlah sampel kelas yang telah diamati.
+- `M_t`: kapasitas memori setelah task `t`.
+  - `memory_budget="global"`: `M_t = memory_size` sejak task pertama.
+  - `memory_budget="per_seen_class"`: `M_t = (memory_size // num_classes) * n_terlihat`, sama dengan LO2LN/iCaRL `fixed_memory`.
+
+Bila `train_eval_dataset` diberikan, entropy dan fitur untuk seleksi exemplar dihitung dari citra tanpa augmentasi (transform evaluasi), seperti herding LO2LN.
 
 Implementasi: `src/adail/memory.py` dan `ADAILTrainer.update_memory()`.
 
@@ -94,10 +99,14 @@ L_distill = T^2 * KL(
 Untuk exemplar lama, skor target lama dijaga di atas `top-k` skor kelas baru:
 
 ```text
-L_ranking = mean max(0, z_new_topk - z_true_old + margin)
+L_ranking = mean max(0, cos_new_topk - cos_true_old + margin)
 ```
 
+Sejak 0.5.0 skor yang dibandingkan adalah similarity cosine tanpa skala (`ranking_space="cosine"`), sama seperti LO2LN. Versi 0.4.0 memakai logit yang sudah dikali skala `s ≈ 10`, sehingga margin 0.2 efektif hanya 0.02 dalam ruang cosine. Perilaku lama tersedia lewat `ranking_space="logit"`.
+
 Pada dataset ordinal, margin diperkecil untuk kelas klinis yang berdekatan dan diperbesar untuk kelas yang jauh.
+
+Pada fase `old`, baris classifier kelas baru tidak ikut diperbarui sama sekali. Nilai dan momentum baris itu dipulihkan setelah `optimizer.step()`; di 0.4.0 gradiennya hanya dinolkan, sehingga momentum dan weight decay tetap menggesernya.
 
 ## 9. Selective Expansion dan Auxiliary Objective
 
@@ -134,12 +143,34 @@ L_total = L_cb_focal
         + lambda_ordinal * L_ordinal
 ```
 
-## 12. Evaluasi
+## 12. Balanced Replay
 
-Metrik yang tersedia:
+Setiap batch berukuran `B` dibagi antara exemplar dan data task berjalan:
 
-- Average Accuracy
-- Average Forgetting
-- per-class forgetting estimate
-- MAE
-- Quadratic Weighted Kappa (QWK)
+```text
+fixed:         B_mem = round(B * replay_memory_fraction)
+proportional:  B_mem = round(B * n_lama / (n_lama + n_baru))
+B_cur = B - B_mem
+```
+
+Di dalam tiap bagian, kelas diputar merata. Dengan `fixed` (0.5), kelas baru selalu mengisi separuh batch, sehingga tampil `n_lama` kali lebih sering daripada tiap kelas lama. Dengan `proportional`, setiap kelas terlihat mendapat jatah yang kira-kira sama.
+
+Panjang epoch:
+
+```text
+current: ceil(n_current / B_cur)              (0.4.0)
+pool:    ceil((n_current + n_memory) / B)
+```
+
+`replay_reaugment=True` menyimpan exemplar sebagai indeks dataset dan memuat ulang citranya melalui transform training setiap kali diputar ulang.
+
+## 13. Evaluasi
+
+Metrik di `history`:
+
+- `average_incremental_accuracy`: rata-rata atas task dari akurasi pada seluruh sampel test kelas yang terlihat (berbobot sampel; definisi iCaRL/LO2LN).
+- `average_accuracy`: rata-rata atas task dari rata-rata *tanpa bobot* akurasi per blok task. Bukan angka yang dilaporkan LO2LN.
+- `average_forgetting` dan per-class forgetting estimate.
+- `seen_balanced_accuracy` per task (macro recall atas kelas terlihat).
+- `old_to_new_confusion` per task dan `average_old_to_new_confusion`: persentase sampel test kelas lama yang diprediksi sebagai kelas baru task itu.
+- MAE dan Quadratic Weighted Kappa (QWK).

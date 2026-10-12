@@ -36,6 +36,15 @@ class PrototypeBank(nn.Module):
         self.vectors = torch.cat([self.vectors, extra_vectors], dim=0)
         self.initialized = torch.cat([self.initialized, extra_flags], dim=0)
 
+    def resize(self, num_classes: int) -> None:
+        """Grow (new prototypes uninitialized) or shrink to `num_classes`."""
+
+        if num_classes >= self.vectors.shape[0]:
+            self.expand(num_classes)
+            return
+        self.vectors = self.vectors[:num_classes].clone()
+        self.initialized = self.initialized[:num_classes].clone()
+
     @torch.no_grad()
     def update(self, features: torch.Tensor, labels: torch.Tensor) -> None:
         """Update prototypes with class-wise EMA."""

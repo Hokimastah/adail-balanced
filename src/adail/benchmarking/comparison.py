@@ -44,6 +44,25 @@ def _as_percent(value: float | None) -> float | None:
     return value * 100.0 if 0.0 <= value <= 1.0 else value
 
 
+def adail_average_incremental_accuracy(history: dict[str, Any]) -> float:
+    """Sample-weighted average incremental accuracy, the quantity LO2LN reports.
+
+    Histories from ADAIL 0.4.0 only stored the task-weighted ``average_accuracy``;
+    for those it is rebuilt from the per-task ``seen_accuracy``.
+    """
+
+    if "average_incremental_accuracy" in history:
+        return float(history["average_incremental_accuracy"])
+    seen = [
+        float(task["metrics"]["seen_accuracy"])
+        for task in history.get("task_results") or []
+        if "seen_accuracy" in task.get("metrics", {})
+    ]
+    if seen:
+        return sum(seen) / len(seen)
+    return float(history.get("average_accuracy", 0.0))
+
+
 def extract_adail_metrics(
     history: dict[str, Any],
     dataset: str,
@@ -54,7 +73,8 @@ def extract_adail_metrics(
         method="ADAIL",
         dataset=dataset,
         scenario=scenario,
-        average_accuracy=_as_percent(float(history.get("average_accuracy", 0.0))),
+        # Same definition as LO2LN's "average incremental accuracy".
+        average_accuracy=_as_percent(adail_average_incremental_accuracy(history)),
         average_forgetting=_as_percent(float(history.get("average_forgetting", 0.0))),
         mae=_last_seen_metric(history, "seen_mae"),
         qwk=_last_seen_metric(history, "seen_qwk"),
